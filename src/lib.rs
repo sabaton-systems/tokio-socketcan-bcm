@@ -406,6 +406,57 @@ impl BCMSocket {
         BcmStream::from(self)
     }
 
+    ///Write frames using bcmsocket
+    pub fn write_frames_bcm_with_timer(
+        &self,
+        can_id: Id,
+        ival1: time::Duration,
+        ival2: time::Duration,
+        frames: [CANFrame; 256 as usize],
+        nframes: u32,
+        // framepack: [CANFrame; 256]
+    ) -> io::Result<()>{
+        let _ival1 = c_timeval_new(ival1);
+        let _ival2 = c_timeval_new(ival2);
+
+        // let mut frames = [CANFrame::new(0x0, &[], false, false).unwrap(); 256 as usize];
+        // frames[0] = CANFrame::new(0x123, &[], false, false).unwrap();
+        let can_id = match can_id {
+            Id::Standard(sid) => sid.as_raw().into(),
+            Id::Extended(eid) => eid.as_raw() | FrameFlags::EFF_FLAG.bits(),
+        };
+
+        let msg = &BcmMsgHead {
+            _opcode: TX_SETUP,
+            _flags: SETTIMER | STARTTIMER | TX_CP_CAN_ID,
+            _count: 0,
+            _ival1: c_timeval_new(ival1),
+            _ival2: c_timeval_new(ival2),
+            _can_id: can_id,
+            _nframes: nframes,
+            #[cfg(all(target_pointer_width = "32"))]
+            _pad: 0,
+            _frames: frames,
+        };
+
+        let msg_ptr = msg as *const BcmMsgHead;
+        let write_rv = unsafe {
+            write(
+                self.fd.as_raw_fd(),
+                msg_ptr as *const c_void,
+                size_of::<BcmMsgHead>(),
+            )
+        };
+
+        let expected_size = size_of::<BcmMsgHead>() - size_of::<[CANFrame; MAX_NFRAMES as usize]>();
+        if write_rv as usize != expected_size {
+            let msg = format!("Wrote {} but expected {}", write_rv, expected_size);
+            return Err(Error::new(ErrorKind::WriteZero, msg));
+        }
+
+        Ok(())
+    }
+    
     /// Create a content filter subscription, filtering can frames by can_id.
     fn filter_id_internal(
         &self,
