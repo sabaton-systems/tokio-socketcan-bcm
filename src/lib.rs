@@ -44,6 +44,7 @@ use mio::{event, unix::SourceFd, Interest, Registry, Token};
 use nix::net::if_::if_nametoindex;
 use std::io::{Error, ErrorKind};
 use std::mem::size_of;
+use std::mem::size_of_val;
 use std::pin::Pin;
 use std::task::Poll;
 use std::{
@@ -406,7 +407,7 @@ impl BCMSocket {
         BcmStream::from(self)
     }
 
-    ///Write frames using bcmsocket
+    ///Write frames using bcmsocket, this starts a cyclic broadcast of frames
     pub fn write_frames_bcm_with_timer(
         &self,
         can_id: Id,
@@ -415,12 +416,10 @@ impl BCMSocket {
         frames: [CANFrame; 256 as usize],
         nframes: u32,
         // framepack: [CANFrame; 256]
-    ) -> io::Result<()>{
+    ) -> io::Result<()> {
         let _ival1 = c_timeval_new(ival1);
         let _ival2 = c_timeval_new(ival2);
 
-        // let mut frames = [CANFrame::new(0x0, &[], false, false).unwrap(); 256 as usize];
-        // frames[0] = CANFrame::new(0x123, &[], false, false).unwrap();
         let can_id = match can_id {
             Id::Standard(sid) => sid.as_raw().into(),
             Id::Extended(eid) => eid.as_raw() | FrameFlags::EFF_FLAG.bits(),
@@ -448,15 +447,25 @@ impl BCMSocket {
             )
         };
 
-        let expected_size = size_of::<BcmMsgHead>() - size_of::<[CANFrame; MAX_NFRAMES as usize]>();
-        if write_rv as usize != expected_size {
-            let msg = format!("Wrote {} but expected {}", write_rv, expected_size);
-            return Err(Error::new(ErrorKind::WriteZero, msg));
+        match write_rv <= 0 {
+            true => {
+                return Err(Error::new(
+                    ErrorKind::WriteZero,
+                    format!("Error returned {:?}", write_rv),
+                ))
+            }
+            false => {
+                let expected_size = size_of::<BcmMsgHead>() - size_of_val(&msg._frames) + size_of::<CANFrame>() * (nframes as usize);
+                if write_rv as usize != expected_size {
+                    let msg = format!("size of frames does not match expected size of frames");
+                    return Err(Error::new(ErrorKind::WriteZero, msg));
+                }
+            }
         }
 
         Ok(())
     }
-    
+
     /// Create a content filter subscription, filtering can frames by can_id.
     fn filter_id_internal(
         &self,
